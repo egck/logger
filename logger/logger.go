@@ -14,21 +14,21 @@ type Log struct {
 	message    string
 	attributes []any
 
-	printHandler     func(msg string, args ...any)
-	occurrenceNumber int
-	firstTime        string
+	printHandler            func(msg string, args ...any) // Handler to print log (debug, info, ...)
+	occurrenceNumber        int // Number of times the log has been detected
+	registerDatetime string // Datetime of the log registering
 }
 
 type Limiter struct {
-	firstN      int
-	flushPeriod int
+	firstN      int // Number of occurrences that will be printed for the same log
+	flushPeriod int // Flush period of known logs
 
-	context   context.Context
-	waitGroup *sync.WaitGroup
+	context   context.Context // Context to properly stop the limiter goroutine
+	waitGroup *sync.WaitGroup // waitGroup to sync with the main process
 }
 
 type Logger struct {
-	logs map[string]*Log
+	logs map[string]*Log // Logs in memory
 	lock sync.Mutex
 
 	// Options
@@ -54,35 +54,41 @@ func (logger *Logger) run() {
 }
 
 func (logger *Logger) flush() {
+	// Guarantee the access to in memory logs
 	logger.lock.Lock()
 	defer logger.lock.Unlock()
 
 	// format every log in memory
 	for _, log := range logger.logs {
 
-		// generate slog attributes to avoid expansive reflexion
+		// generate slog attributes
 		attributes := append(
 			log.attributes,
 			slog.Int("occurrences", log.occurrenceNumber),
-			slog.String("since", log.firstTime),
+			slog.String("since", log.registerDatetime),
 		)
 
+		// Print the summary of the log
 		log.printHandler(log.message, attributes...)
 	}
 
+	// reset memory
 	logger.logs = map[string]*Log{}
 }
 
 func (logger *Logger) register(printHandler func(msg string, args ...any), message string, args ...any) *Log {
+	// Register the log in the memory
 	if _, exists := logger.logs[message]; !exists {
 		logger.logs[message] = &Log{
-			message:          message,
-			printHandler:     printHandler,
-			firstTime:        time.Now().Format("2006-01-02T15:04:05.999999999Z07:00"),
-			occurrenceNumber: 0,
-			attributes:       args,
+			message:                 message,
+			printHandler:            printHandler,
+			registerDatetime: time.Now().Format("2006-01-02T15:04:05.999999999Z07:00"),
+			occurrenceNumber:        0,
+			attributes:              args,
 		}
 	}
+
+	// Increment occurrence number
 	logger.logs[message].occurrenceNumber++
 
 	return logger.logs[message]
@@ -97,6 +103,7 @@ func (logger *Logger) print(log *Log) {
 // Public functions
 
 func NewLogger(opts ...Option) (*Logger, error) {
+	// Init logger
 	logger := &Logger{
 		logLevel: &slog.LevelVar{},
 		logs:     map[string]*Log{},
@@ -111,6 +118,7 @@ func NewLogger(opts ...Option) (*Logger, error) {
 		return nil, errors.New("logger must be init with a text or json handler")
 	}
 
+	// Run limiter goroutine if needed
 	if logger.limiter != nil {
 		logger.limiter.waitGroup.Add(1)
 		go logger.run()
